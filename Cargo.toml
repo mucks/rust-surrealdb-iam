@@ -1,0 +1,19 @@
+[package]
+name = "rust-surrealdb-iam"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+jsonwebtoken = { version = "8", default-features = false }
+axum = "0.6.1"
+tokio = { version = "1.13.0", features = ["full"] }
+hyper = { version = "0.14", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+dotenvy = "0.15"
+anyhow = "1.0"
+fake = "2.5"
