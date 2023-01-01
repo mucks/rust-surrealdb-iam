@@ -109,8 +109,8 @@ mod test {
 
     #[tokio::test]
     async fn user() {
+        dotenvy::dotenv().ok();
         let api = UserApi::new(init_client().await.unwrap());
-
         let name = "cargotest_user";
 
         let user = api.create(name, name).await.unwrap();
