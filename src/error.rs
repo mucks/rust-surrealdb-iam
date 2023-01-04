@@ -3,6 +3,7 @@ use hyper::StatusCode;
 
 pub type MyResult<T> = std::result::Result<T, MyError>;
 
+#[derive(Debug)]
 pub struct MyError {
     pub err: String,
 }

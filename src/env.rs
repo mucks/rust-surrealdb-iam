@@ -1,3 +1,5 @@
+use crate::user::CreateUserDto;
+
 pub fn jwt_secret() -> String {
     std::env::var("JWT_SECRET").expect("NO JWT_SECRET SET")
 }
@@ -6,10 +8,20 @@ pub fn validate_envs() {
     jwt_secret();
     salt();
     database_connection_info();
+    admin_user();
 }
 
 pub fn salt() -> String {
     std::env::var("SALT").expect("NO SALT SET")
+}
+
+pub fn admin_user() -> CreateUserDto {
+    use std::env::var;
+    CreateUserDto {
+        username: var("ADMIN_USERNAME").expect("NO ADMIN_USERNAME SET"),
+        password: var("ADMIN_PASSWORD").expect("NO ADMIN_PASSWORD SET"),
+        email: var("ADMIN_EMAIL").expect("NO ADMIN_EMAIL SET"),
+    }
 }
 
 pub struct DatabaseConnectionInfo {
