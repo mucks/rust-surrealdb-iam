@@ -1,26 +1,15 @@
 use anyhow::Result;
-use surrealdb_rs::{net::HttpClient, param::Database, protocol::Https, Surreal};
+use surrealdb_http_client_rs::Client;
 
-const NUM: usize = 100_000;
-
-pub async fn init_client() -> Result<Surreal<HttpClient>> {
+pub async fn init_client() -> Result<Client> {
     let db = crate::env::database_connection_info();
-    let client = Surreal::connect::<Https>(db.host)
-        .with_capacity(NUM)
-        .await?;
-
-    // Signin as a namespace, database, or root user
-    client
-        .signin(Database {
-            username: &db.username,
-            password: &db.password,
-            namespace: &db.namespace,
-            database: &db.database,
-        })
-        .await?;
-
-    // Select a specific namespace and database
-    client.use_ns(&db.namespace).use_db(&db.database).await?;
-
+    let cfg = surrealdb_http_client_rs::ClientConfig {
+        host: db.host,
+        username: db.username,
+        password: db.password,
+        namespace: db.namespace,
+        database: db.database,
+    };
+    let client = surrealdb_http_client_rs::Client::new(cfg)?;
     Ok(client)
 }

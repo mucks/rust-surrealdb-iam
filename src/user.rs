@@ -1,25 +1,32 @@
 use anyhow::{anyhow, Result};
-use argon2::Config;
+use chrono::{DateTime, Utc};
 use hyper::StatusCode;
 use jsonwebtoken::{EncodingKey, Header};
 use serde::{Deserialize, Serialize};
-use surrealdb_rs::{net::HttpClient, param::PatchOp, Surreal};
 
 use axum::{
     extract::{Path, State},
     response::IntoResponse,
-    routing::{get, post, MethodRouter},
+    routing::{get, post},
     Json, Router,
 };
+use surrealdb_http_client_rs::{Client, ResponseExt};
 
 use crate::{error::MyResult, web_server::AppState};
 
 #[derive(Serialize, Deserialize, Debug, Default, Clone)]
 pub struct User {
-    #[serde(skip_serializing)]
-    pub id: Option<String>,
+    pub id: String,
     pub username: String,
     pub password: String,
+    pub email: String,
+    pub roles: Vec<String>,
+    pub created_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Serialize, Debug, Default)]
+pub struct GetUserDto {
+    pub username: String,
     pub email: String,
     pub roles: Vec<String>,
 }
@@ -42,7 +49,7 @@ pub struct Claims {
 
 #[derive(Clone)]
 pub struct UserApi {
-    client: Surreal<HttpClient>,
+    client: Client,
     namespace: String,
 }
 
@@ -72,50 +79,53 @@ impl UserApi {
         Ok((StatusCode::OK, Json(user)))
     }
 
-    pub fn new(client: Surreal<HttpClient>) -> Self {
-        Self {
+    pub async fn new(client: Client) -> Result<Self> {
+        let s = Self {
             client,
             namespace: "master".into(),
-        }
+        };
+        s.init().await?;
+        Ok(s)
     }
     pub fn set_namespace(&mut self, namespace: &str) {
         self.namespace = namespace.into();
     }
-    fn table_name(&self) -> String {
-        format!("{}_user", &self.namespace)
+
+    pub async fn init(&self) -> Result<()> {
+        self.client
+            .query(
+                "
+            DEFINE TABLE user SCHEMAFULL;
+
+            DEFINE FIELD username ON TABLE user TYPE string;
+            DEFINE FIELD email ON TABLE user TYPE string;
+            DEFINE FIELD namespace ON TABLE user TYPE string;
+            DEFINE FIELD password ON TABLE user TYPE string;
+            DEFINE FIELD roles ON TABLE user TYPE array;
+            DEFINE FIELD roles.* ON TABLE user TYPE string;
+
+            DEFINE FIELD created_at ON TABLE user VALUE time::now();
+            DEFINE INDEX email_unique ON TABLE user FIELDS email, namespace UNIQUE;
+            DEFINE INDEX username_unique ON TABLE user FIELDS username, namespace UNIQUE;
+                ",
+            )
+            .send()
+            .await?;
+        Ok(())
     }
 
     pub async fn create(&self, dto: &CreateUserDto) -> Result<User> {
-        //TODO: the squery binding here is buggy and needs to be fixed in the library
-        //
-        // self.client
-        //     .query(
-        //         "
-        //     DEFINE FIELD email ON TABLE $t TYPE string;
-        //     DEFINE FIELD created_at ON TABLE $t VALUE time::now();
-        //     DEFINE INDEX email_unique ON TABLE $t COLUMNS email UNIQUE;
-        //         ",
-        //     )
-        //     .bind("table", &self.table_name())
-        //     .await?;
-
-        let password_hash = argon2::hash_encoded(
-            dto.password.as_bytes(),
-            crate::env::salt().as_bytes(),
-            &Config::default(),
-        )?;
-
-        let user: User = self
+        let resp = self
             .client
-            .create((self.table_name(), dto.username.clone()))
-            .content(User {
-                id: None,
-                username: dto.username.clone(),
-                password: password_hash,
-                email: "".to_string(),
-                roles: vec![],
-            })
+            .query("CREATE user SET username = $username, email = $email, namespace = $namespace, password = crypto::argon2::generate($password), roles = [];")
+            .bind("username", &dto.username)
+            .bind("email", &dto.email)
+            .bind("namespace", &self.namespace)
+            .bind("password", &dto.password)
+            .send()
             .await?;
+        println!("resp: {:?}", resp);
+        let user: User = resp.get_result()?;
 
         println!("user: {:?}", user);
 
@@ -123,18 +133,14 @@ impl UserApi {
     }
 
     pub async fn login(&self, username: &str, password: &str) -> Result<String> {
-        let user: Option<User> = self.client.select(("user", username)).await?;
-
-        if user.is_none() {
-            return Err(anyhow!("Invalid username or password"));
-        }
-        let user = user.unwrap();
-
-        let is_valid = argon2::verify_encoded(&user.password, password.as_bytes())?;
-
-        if !is_valid {
-            return Err(anyhow!("Invalid username or password"));
-        }
+        let user: User = self
+            .client
+            .query("SELECT * FROM user WHERE $username = username AND crypto::argon2::compare(password, $password);")
+            .bind("username", username)
+            .bind("password", password)
+            .send()
+            .await?
+            .get_result().map_err(|_| anyhow!("Invalid username or password"))?;
 
         let claims = Claims {
             username: user.username,
@@ -149,22 +155,47 @@ impl UserApi {
         Ok(jwt)
     }
 
-    pub async fn get(&self, username: &str) -> Result<User> {
-        let user: User = self.client.select((self.table_name(), username)).await?;
+    pub async fn get_by_username(&self, username: &str) -> Result<User> {
+        let user: User = self
+            .client
+            .query("SELECT * FROM user WHERE username = $username AND namespace = $namespace;")
+            .bind("username", username)
+            .bind("namespace", &self.namespace)
+            .send()
+            .await?
+            .get_result()?;
+        println!("username_user: {:?}", user);
         Ok(user)
     }
 
-    pub async fn add_role(&self, username: &str, role_id: &str) -> Result<()> {
-        let user_role_update: IgnoreResponse = self
+    pub async fn get(&self, id: &str) -> Result<User> {
+        let user: User = self
             .client
-            .update((self.table_name(), username))
-            .patch(PatchOp::add("/roles", [role_id]))
+            .query("SELECT * FROM $id;")
+            .bind("id", id)
+            .send()
+            .await?
+            .get_result()?;
+        Ok(user)
+    }
+
+    pub async fn add_role(&self, id: &str, role_id: &str) -> Result<()> {
+        println!("add_role: {}", id);
+        self.client
+            .query("UPDATE $id SET roles += $role_id;")
+            .bind("id", id)
+            .bind("role_id", role_id)
+            .send()
             .await?;
         Ok(())
     }
 
     pub async fn delete(&self, id: &str) -> Result<()> {
-        self.client.delete((self.table_name(), id)).await?;
+        self.client
+            .query("DELETE $id;")
+            .bind("id", id)
+            .send()
+            .await?;
         Ok(())
     }
 }
@@ -178,7 +209,7 @@ mod test {
     #[tokio::test]
     async fn user() {
         dotenvy::dotenv().ok();
-        let mut api = UserApi::new(init_client().await.unwrap());
+        let mut api = UserApi::new(init_client().await.unwrap()).await.unwrap();
         api.set_namespace("test");
         let name = "cargotest_user";
 
@@ -190,21 +221,21 @@ mod test {
             })
             .await
             .unwrap();
-        api.add_role(&user.username, "role:admin").await.unwrap();
-        let user = api.get(&user.username).await.unwrap();
+        api.add_role(&user.id, "role:admin").await.unwrap();
+        let user = api.get(&user.id).await.unwrap();
 
         assert!(user.roles.iter().any(|r| r == "role:admin"));
         assert_eq!(user.username, name);
 
-        api.delete(&user.username).await.unwrap();
+        api.delete(&user.id).await.unwrap();
 
-        assert!(api.get(&user.username).await.is_err());
+        assert!(api.get_by_username(&user.username).await.is_err());
     }
 
     #[tokio::test]
     async fn user_login() {
         dotenvy::dotenv().ok();
-        let mut api = UserApi::new(init_client().await.unwrap());
+        let mut api = UserApi::new(init_client().await.unwrap()).await.unwrap();
         api.set_namespace("test");
         let name = "cargotest_user_login";
 
@@ -218,6 +249,6 @@ mod test {
             .unwrap();
         let token = api.login(name, name).await.unwrap();
         assert!(token.len() > 10);
-        api.delete(&user.username).await.unwrap();
+        api.delete(&user.id).await.unwrap();
     }
 }

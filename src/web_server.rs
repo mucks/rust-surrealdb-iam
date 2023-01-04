@@ -1,17 +1,7 @@
-use axum::{
-    extract::{Path, State},
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
-use hyper::StatusCode;
+use axum::Router;
 use std::net::SocketAddr;
 
-use crate::{
-    db::init_client,
-    error::MyResult,
-    user::{CreateUserDto, UserApi},
-};
+use crate::{db::init_client, user::UserApi};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -23,7 +13,7 @@ pub async fn start() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
     let state = AppState {
-        user_api: UserApi::new(init_client().await?),
+        user_api: UserApi::new(init_client().await?).await?,
     };
 
     let api = Router::new().nest("/:namespace/user", UserApi::routes());

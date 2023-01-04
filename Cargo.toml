@@ -17,7 +17,5 @@ tracing-subscriber = "0.3"
 dotenvy = "0.15"
 anyhow = "1.0"
 fake = "2.5"
-surrealdb-rs = { git = "https://github.com/surrealdb/surrealdb.rs", version = "0.1.0", features = [
-  "http",
-] }
-rust-argon2 = "1.0"
+surrealdb-http-client-rs = { git = "https://github.com/mucks/surrealdb-http-client-rs" }
+chrono = { version = "0.4", features = ["serde"] }
