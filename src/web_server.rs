@@ -3,23 +3,26 @@ use std::net::SocketAddr;
 
 use crate::{
     db::init_client,
-    role::{RoleApi, RoleBinding},
-    user::{UserApi, UserApiHandler},
+    role::{RoleApi, RoleBinding, RoleController},
+    user::{UserApi, UserController},
 };
 
 #[derive(Clone)]
 pub struct AppState {
-    pub user_api: UserApi,
-    pub role_api: RoleApi,
+    pub user_ctrl: UserController,
+    pub role_ctrl: RoleController,
 }
 
 pub async fn init_state() -> anyhow::Result<AppState> {
     let client = init_client().await?;
     RoleBinding::init(&client).await?;
-    let role_api = RoleApi::new(client.clone()).await?;
-    role_api.add_default_roles().await;
-    let user_api = UserApi::new(client.clone()).await?;
-    let state = AppState { user_api, role_api };
+    let role_ctrl = RoleController::new(client.clone()).await?;
+    role_ctrl.add_default_roles().await;
+    let user_ctrl = UserController::new(client.clone()).await?;
+    let state = AppState {
+        user_ctrl,
+        role_ctrl,
+    };
     Ok(state)
 }
 
@@ -30,7 +33,9 @@ pub async fn start() -> anyhow::Result<()> {
     // initialize state
     let state = init_state().await?;
 
-    let api = Router::new().nest("/:namespace/user", UserApiHandler::routes());
+    let api = Router::new()
+        .nest("/:namespace/user", UserApi::routes())
+        .nest("/:namespace/role", RoleApi::routes());
     let app = Router::new().nest("/api/v1", api).with_state(state);
 
     // run our app with hyper

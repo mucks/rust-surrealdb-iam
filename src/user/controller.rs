@@ -1,106 +1,18 @@
+use super::model::*;
 use anyhow::{anyhow, Result};
-use chrono::{DateTime, Utc};
-use hyper::StatusCode;
 use jsonwebtoken::{EncodingKey, Header};
-use serde::{Deserialize, Serialize};
 
-use axum::{
-    extract::{Path, State},
-    response::IntoResponse,
-    routing::{get, post},
-    Json, Router,
-};
 use surrealdb_http_client_rs::{Client, ResponseExt};
 
-use crate::{error::MyResult, role::RoleBinding, web_server::AppState};
-
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
-pub struct User {
-    pub id: String,
-    pub username: String,
-    pub password: String,
-    pub email: String,
-    pub created_at: Option<DateTime<Utc>>,
-}
-
-#[derive(Serialize, Debug, Default)]
-pub struct GetUserDto {
-    pub username: String,
-    pub email: String,
-    pub roles: Vec<String>,
-}
-
-#[derive(Deserialize, Debug, Default, Clone)]
-pub struct CreateUserDto {
-    pub username: String,
-    pub password: String,
-    pub email: String,
-}
-
-#[derive(Serialize, Deserialize, Debug, Default, Clone)]
-pub struct IgnoreResponse {}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Claims {
-    pub username: String,
-    pub roles: Vec<String>,
-}
-
-pub struct UserApiHandler;
-
-impl UserApiHandler {
-    pub fn routes() -> Router<AppState> {
-        Router::new()
-            .route("/add", post(Self::add))
-            .route("/:id", get(Self::get).delete(Self::delete))
-            .route("/all", get(Self::get_all))
-    }
-
-    async fn add(
-        State(mut state): State<AppState>,
-        Path(realm): Path<String>,
-        Json(payload): Json<CreateUserDto>,
-    ) -> MyResult<impl IntoResponse> {
-        state.user_api.set_realm(&realm);
-        let user = state.user_api.create(&payload).await?;
-        Ok((StatusCode::OK, Json(user)))
-    }
-
-    async fn get(
-        State(mut state): State<AppState>,
-        Path((realm, id)): Path<(String, String)>,
-    ) -> MyResult<impl IntoResponse> {
-        state.user_api.set_realm(&realm);
-        let user = state.user_api.get(&id).await?;
-        Ok((StatusCode::OK, Json(user)))
-    }
-
-    async fn delete(
-        State(mut state): State<AppState>,
-        Path((realm, id)): Path<(String, String)>,
-    ) -> MyResult<impl IntoResponse> {
-        state.user_api.set_realm(&realm);
-        state.user_api.delete(&id).await?;
-        Ok((StatusCode::OK, id))
-    }
-
-    async fn get_all(
-        State(mut state): State<AppState>,
-        Path(realm): Path<String>,
-    ) -> MyResult<impl IntoResponse> {
-        state.user_api.set_realm(&realm);
-        let user = state.user_api.get_all().await?;
-        Ok((StatusCode::OK, Json(user)))
-    }
-}
+use crate::role::RoleBinding;
 
 #[derive(Clone)]
-pub struct UserApi {
+pub struct UserController {
     client: Client,
     realm: String,
 }
 
-impl UserApi {
+impl UserController {
     pub async fn new(client: Client) -> Result<Self> {
         let s = Self {
             client,
@@ -227,57 +139,30 @@ impl UserApi {
         Ok(())
     }
 }
-
 #[cfg(test)]
 mod test {
-    use crate::{db::init_client, role::RoleApi, web_server::init_state};
+    use crate::{db::init_client, role::RoleController};
 
     use super::*;
-
-    #[tokio::test]
-    async fn api_user_add() {
-        dotenvy::dotenv().ok();
-
-        let state = init_state().await.unwrap();
-        let dto = CreateUserDto {
-            username: "api_user_add_test".into(),
-            email: "api_user_add_test@localhost".into(),
-            password: "test".into(),
-        };
-
-        let user =
-            UserApiHandler::add(State(state.clone()), Path("test".into()), Json(dto.clone()))
-                .await
-                .unwrap();
-
-        let bytes = hyper::body::to_bytes(user.into_response().into_body())
-            .await
-            .unwrap();
-        let s = String::from_utf8(bytes.to_vec()).unwrap();
-        let user: User = serde_json::from_str(&s).unwrap();
-
-        assert_eq!(&user.username, &dto.username);
-        assert_eq!(&user.email, &dto.email);
-
-        UserApiHandler::delete(State(state), Path(("test".into(), user.id)))
-            .await
-            .unwrap();
-    }
 
     #[tokio::test]
     async fn user() {
         dotenvy::dotenv().ok();
 
-        let mut api = UserApi::new(init_client().await.unwrap()).await.unwrap();
-        let mut role_api = RoleApi::new(init_client().await.unwrap()).await.unwrap();
-        RoleBinding::init(&api.client).await.unwrap();
+        let mut ctrl = UserController::new(init_client().await.unwrap())
+            .await
+            .unwrap();
+        let mut role_ctrl = RoleController::new(init_client().await.unwrap())
+            .await
+            .unwrap();
+        RoleBinding::init(&ctrl.client).await.unwrap();
 
-        api.set_realm("test");
-        role_api.set_realm("test");
-        role_api.add_default_roles().await;
+        ctrl.set_realm("test");
+        role_ctrl.set_realm("test");
+        role_ctrl.add_default_roles().await;
         let name = "cargotest_user";
 
-        let user = api
+        let user = ctrl
             .create(&CreateUserDto {
                 username: name.to_string(),
                 password: name.to_string(),
@@ -286,19 +171,19 @@ mod test {
             .await
             .unwrap();
 
-        let role = role_api.get_by_name("admin").await.unwrap();
-        RoleBinding::add_role_to_user(&api.client, &user.id, &role.id)
+        let role = role_ctrl.get_by_name("admin").await.unwrap();
+        RoleBinding::add_role_to_user(&ctrl.client, &user.id, &role.id)
             .await
             .unwrap();
 
         //adding same role twice should fail
         assert!(
-            RoleBinding::add_role_to_user(&api.client, &user.id, &role.id)
+            RoleBinding::add_role_to_user(&ctrl.client, &user.id, &role.id)
                 .await
                 .is_err()
         );
 
-        let roles = RoleBinding::get_roles_from_user(&api.client, &user.id)
+        let roles = RoleBinding::get_roles_from_user(&ctrl.client, &user.id)
             .await
             .unwrap();
 
@@ -307,19 +192,21 @@ mod test {
         assert!(roles.iter().any(|r| r == &role.id));
         assert_eq!(user.username, name);
 
-        api.delete(&user.id).await.unwrap();
+        ctrl.delete(&user.id).await.unwrap();
 
-        assert!(api.get_by_username(&user.username).await.is_err());
+        assert!(ctrl.get_by_username(&user.username).await.is_err());
     }
 
     #[tokio::test]
     async fn user_login() {
         dotenvy::dotenv().ok();
-        let mut api = UserApi::new(init_client().await.unwrap()).await.unwrap();
-        api.set_realm("test");
+        let mut ctrl = UserController::new(init_client().await.unwrap())
+            .await
+            .unwrap();
+        ctrl.set_realm("test");
         let name = "cargotest_user_login";
 
-        let user = api
+        let user = ctrl
             .create(&CreateUserDto {
                 username: name.to_string(),
                 password: name.to_string(),
@@ -327,8 +214,8 @@ mod test {
             })
             .await
             .unwrap();
-        let token = api.login(name, name).await.unwrap();
+        let token = ctrl.login(name, name).await.unwrap();
         assert!(token.len() > 10);
-        api.delete(&user.id).await.unwrap();
+        ctrl.delete(&user.id).await.unwrap();
     }
 }

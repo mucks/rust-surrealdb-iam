@@ -1,82 +1,14 @@
+use super::{model::*, role_binding::RoleBinding};
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use surrealdb_http_client_rs::{Client, ResponseExt};
 
-#[derive(Serialize, Deserialize, Debug)]
-pub struct Role {
-    pub id: String,
-    pub name: String,
-    pub description: String,
-    pub realm: String,
-}
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct RoleBinding {
-    pub id: String,
-    #[serde(rename = "in")]
-    pub role_id: String,
-    #[serde(rename = "out")]
-    pub user_id: String,
-}
-
-pub struct CreateRoleDto {
-    pub name: String,
-    pub description: String,
-}
-
-impl RoleBinding {
-    pub async fn init(client: &Client) -> Result<()> {
-        client
-            .query("DEFINE INDEX role_binding_unique ON role_binding FIELDS in, out UNIQUE")
-            .send()
-            .await?;
-        Ok(())
-    }
-    pub async fn delete_by_role(client: &Client, role_id: &str) -> Result<()> {
-        client
-            .query("DELETE role_binding WHERE in = $role_id")
-            .bind("role_id", role_id)
-            .send()
-            .await?;
-        Ok(())
-    }
-    pub async fn delete_by_user(client: &Client, user_id: &str) -> Result<()> {
-        client
-            .query("DELETE role_binding WHERE out = $user_id")
-            .bind("user_id", user_id)
-            .send()
-            .await?;
-        Ok(())
-    }
-
-    pub async fn get_roles_from_user(client: &Client, user_id: &str) -> Result<Vec<String>> {
-        let role_ids: Vec<RoleBinding> = client
-            .query("SELECT * from role_binding where out = $user_id")
-            .bind("user_id", user_id)
-            .send()
-            .await?
-            .get_results()?;
-        Ok(role_ids.iter().map(|r| r.role_id.clone()).collect())
-    }
-
-    pub async fn add_role_to_user(client: &Client, user_id: &str, role_id: &str) -> Result<()> {
-        client
-            .query("RELATE $role_id->role_binding->$user_id")
-            .bind("role_id", role_id)
-            .bind("user_id", user_id)
-            .send()
-            .await?;
-        Ok(())
-    }
-}
-
 #[derive(Clone)]
-pub struct RoleApi {
+pub struct RoleController {
     client: Client,
     realm: String,
 }
 
-impl RoleApi {
+impl RoleController {
     pub async fn new(client: Client) -> Result<Self> {
         let s = Self {
             client,
@@ -133,6 +65,25 @@ impl RoleApi {
             .get_result()
     }
 
+    pub async fn get(&self, id: &str) -> Result<Role> {
+        let user: Role = self
+            .client
+            .query("SELECT * FROM $id;")
+            .bind("id", id)
+            .send()
+            .await?
+            .get_result()?;
+        Ok(user)
+    }
+
+    pub async fn get_all(&self) -> Result<Vec<Role>> {
+        self.client
+            .query("SELECT * FROM role;")
+            .send()
+            .await?
+            .get_results()
+    }
+
     pub async fn create(&self, dto: &CreateRoleDto) -> Result<Role> {
         self.client
             .query("CREATE role SET name = $name, description = $description, realm = $realm;")
@@ -153,19 +104,23 @@ impl RoleApi {
         Ok(())
     }
 }
-
 #[cfg(test)]
 mod test {
-    use crate::{db::init_client, role::RoleApi};
+    use crate::{
+        db::init_client,
+        role::{controller::RoleController, model::CreateRoleDto},
+    };
 
     #[tokio::test]
     async fn create_role() {
         dotenvy::dotenv().ok();
-        let mut api = RoleApi::new(init_client().await.unwrap()).await.unwrap();
-        api.set_realm("test");
+        let mut ctrl = RoleController::new(init_client().await.unwrap())
+            .await
+            .unwrap();
+        ctrl.set_realm("test");
 
-        let role = api
-            .create(&crate::role::CreateRoleDto {
+        let role = ctrl
+            .create(&CreateRoleDto {
                 name: "test".into(),
                 description: "Test role".into(),
             })
@@ -174,6 +129,6 @@ mod test {
         assert_eq!(role.name, "test");
         assert_eq!(role.description, "Test role");
 
-        api.delete(&role.id).await.unwrap();
+        ctrl.delete(&role.id).await.unwrap();
     }
 }
